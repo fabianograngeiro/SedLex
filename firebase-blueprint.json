@@ -1,0 +1,77 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile and SaaS subscription data",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "defensor", "analista"] },
+        "org": { "type": "string", "description": "DP-SP, DP-RJ, etc" },
+        "plan": { "type": "string", "enum": ["trial", "pro", "enterprise"] },
+        "status": { "type": "string", "enum": ["active", "pending", "suspended"] },
+        "lastActive": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "role", "org", "plan", "status", "createdAt"]
+    },
+    "Case": {
+      "title": "Case Analysis",
+      "description": "Stores analyzed case details and generated minuta",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "description": { "type": "string", "description": "Original user input" },
+        "minutaPeca": { "type": "string" },
+        "diagnostico": { "type": "string" },
+        "estrategiaBusca": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "description", "minutaPeca", "diagnostico", "estrategiaBusca", "createdAt"]
+    },
+    "SearchString": {
+      "title": "Search String",
+      "description": "Historical generated search strings",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "term": { "type": "string" },
+        "result": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "term", "result", "createdAt"]
+    },
+    "RulingAnalysis": {
+      "title": "Ruling Analysis",
+      "description": "Historical ruling analysis results",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "text": { "type": "string" },
+        "result": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "text", "result", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/users/{userId}/cases/{caseId}": {
+      "schema": "Case",
+      "description": "Individual case analyses per user"
+    },
+    "/users/{userId}/searches/{searchId}": {
+      "schema": "SearchString",
+      "description": "Search string history"
+    },
+    "/users/{userId}/rulings/{rulingId}": {
+      "schema": "RulingAnalysis",
+      "description": "Ruling analysis history"
+    }
+  }
+}

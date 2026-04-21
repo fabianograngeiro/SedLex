@@ -1,0 +1,117 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'admin';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Helpers
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'role', 'org', 'plan', 'status', 'createdAt'])
+        && data.keys().size() == (data.hasAny(['lastActive']) ? 9 : 8)
+        && data.uid == request.auth.uid
+        && data.name is string && data.name.size() <= 200
+        && data.email is string && data.email.size() <= 200
+        && data.role in ['admin', 'defensor', 'analista']
+        && data.org is string && data.org.size() <= 100
+        && data.plan in ['trial', 'pro', 'enterprise']
+        && data.status in ['active', 'pending', 'suspended']
+        && data.createdAt == request.time;
+    }
+
+    function isValidCase(data) {
+      return data.keys().hasAll(['userId', 'description', 'minutaPeca', 'diagnostico', 'estrategiaBusca', 'createdAt'])
+        && data.keys().size() == 6
+        && data.userId == request.auth.uid
+        && data.description is string && data.description.size() <= 10000
+        && data.minutaPeca is string && data.minutaPeca.size() <= 50000
+        && data.diagnostico is string && data.diagnostico.size() <= 10000
+        && data.estrategiaBusca is string && data.estrategiaBusca.size() <= 2000
+        && data.createdAt == request.time;
+    }
+
+    function isValidSearch(data) {
+      return data.keys().hasAll(['userId', 'term', 'result', 'createdAt'])
+        && data.keys().size() == 4
+        && data.userId == request.auth.uid
+        && data.term is string && data.term.size() <= 1000
+        && data.result is string && data.result.size() <= 5000
+        && data.createdAt == request.time;
+    }
+
+    function isValidRuling(data) {
+      return data.keys().hasAll(['userId', 'text', 'result', 'createdAt'])
+        && data.keys().size() == 4
+        && data.userId == request.auth.uid
+        && data.text is string && data.text.size() <= 50000
+        && data.result is string && data.result.size() <= 50000
+        && data.createdAt == request.time;
+    }
+
+    // 1. Users Collection
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      
+      allow update: if (isAdmin() && isValidUser(incoming())) || (
+        isOwner(userId)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'lastActive'])
+        && incoming().name is string && incoming().name.size() <= 200
+        && incoming().lastActive is string // Simple check for mock
+      );
+      
+      allow delete: if isAdmin();
+
+      // Subcollections
+      match /cases/{caseId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidCase(incoming()) && isValidId(caseId);
+        allow update, delete: if isAdmin();
+      }
+
+      match /searches/{searchId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidSearch(incoming()) && isValidId(searchId);
+        allow update, delete: if isAdmin();
+      }
+
+      match /rulings/{rulingId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidRuling(incoming()) && isValidId(rulingId);
+        allow update, delete: if isAdmin();
+      }
+    }
+  }
+}
