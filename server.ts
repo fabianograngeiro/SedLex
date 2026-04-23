@@ -63,6 +63,14 @@ interface AnalystToolOutput {
   content: string;
 }
 
+interface AnalystIndividual {
+  id: string;
+  name: string;
+  age?: number;
+  personalInfo: string;
+  roleType: string;
+}
+
 interface AnalystChatMessage {
   id: number;
   role: "user" | "assistant";
@@ -79,6 +87,7 @@ interface AnalystChatRecord {
   createdAt: string;
   updatedAt: string;
   messages: AnalystChatMessage[];
+  individuals: AnalystIndividual[];
 }
 
 interface AiConfig {
@@ -520,6 +529,36 @@ async function loadDb() {
                   };
                 })
             : [],
+          individuals: Array.isArray((typed as { individuals?: unknown[] }).individuals)
+            ? ((typed as { individuals?: unknown[] }).individuals || [])
+                .filter((person) => person && typeof person === "object")
+                .map((person) => {
+                  const typedPerson = person as Partial<AnalystIndividual>;
+                  return {
+                    id:
+                      typeof typedPerson.id === "string" && typedPerson.id.trim().length > 0
+                        ? typedPerson.id
+                        : crypto.randomUUID(),
+                    name:
+                      typeof typedPerson.name === "string"
+                        ? typedPerson.name.trim()
+                        : "",
+                    age:
+                      typeof typedPerson.age === "number" && Number.isFinite(typedPerson.age)
+                        ? Math.max(0, Math.floor(typedPerson.age))
+                        : undefined,
+                    personalInfo:
+                      typeof typedPerson.personalInfo === "string"
+                        ? typedPerson.personalInfo.trim()
+                        : "",
+                    roleType:
+                      typeof typedPerson.roleType === "string" && typedPerson.roleType.trim().length > 0
+                        ? typedPerson.roleType.trim().toLowerCase()
+                        : "individuo",
+                  };
+                })
+                .filter((person) => person.name.length > 0)
+            : [],
         };
       })
       .filter((chat) => chat.userId.length > 0);
@@ -669,6 +708,11 @@ interface AnalystPlan {
   requestedTools: string[];
 }
 
+interface AnalystToolExecutionResult {
+  outputs: AnalystToolOutput[];
+  updatedIndividuals: AnalystIndividual[];
+}
+
 interface WebSearchItem {
   title: string;
   url: string;
@@ -736,6 +780,95 @@ function webItemsToMarkdown(items: WebSearchItem[]) {
     .join("\n");
 }
 
+function normalizeRoleType(value: string) {
+  const clean = value.trim().toLowerCase();
+  if (!clean) return "individuo";
+  if (clean.includes("cliente")) return "cliente";
+  if (clean.includes("vitima") || clean.includes("vítima")) return "vitima";
+  if (clean.includes("culp") || clean.includes("suspeit")) return "culpado";
+  if (clean.includes("testemunha")) return "testemunha";
+  if (clean.includes("autor")) return "autor";
+  if (clean.includes("reu") || clean.includes("réu")) return "reu";
+  return clean;
+}
+
+function normalizeIndividuals(input: unknown[]) {
+  return input
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const typed = item as Partial<AnalystIndividual>;
+      return {
+        id:
+          typeof typed.id === "string" && typed.id.trim().length > 0
+            ? typed.id
+            : crypto.randomUUID(),
+        name: typeof typed.name === "string" ? typed.name.trim() : "",
+        age:
+          typeof typed.age === "number" && Number.isFinite(typed.age)
+            ? Math.max(0, Math.floor(typed.age))
+            : undefined,
+        personalInfo:
+          typeof typed.personalInfo === "string" ? typed.personalInfo.trim() : "",
+        roleType:
+          typeof typed.roleType === "string"
+            ? normalizeRoleType(typed.roleType)
+            : "individuo",
+      } as AnalystIndividual;
+    })
+    .filter((person) => person.name.length > 0);
+}
+
+function mergeIndividuals(existing: AnalystIndividual[], next: AnalystIndividual[]) {
+  const merged = new Map<string, AnalystIndividual>();
+
+  for (const person of existing) {
+    const key = `${person.name.toLowerCase()}|${normalizeRoleType(person.roleType)}`;
+    merged.set(key, { ...person, roleType: normalizeRoleType(person.roleType) });
+  }
+
+  for (const person of next) {
+    const key = `${person.name.toLowerCase()}|${normalizeRoleType(person.roleType)}`;
+    const current = merged.get(key);
+    merged.set(key, {
+      id: current?.id || person.id || crypto.randomUUID(),
+      name: person.name,
+      age: typeof person.age === "number" ? person.age : current?.age,
+      personalInfo: person.personalInfo || current?.personalInfo || "",
+      roleType: normalizeRoleType(person.roleType),
+    });
+  }
+
+  return [...merged.values()];
+}
+
+async function extractIndividualsFromCaseContext(
+  caseContextText: string,
+  currentIndividuals: AnalystIndividual[]
+) {
+  const prompt = `Extraia individuos envolvidos no caso e retorne SOMENTE JSON com o formato:
+{"individuals":[{"name":"...","age":0,"personalInfo":"...","roleType":"cliente|vitima|culpado|testemunha|autor|reu|individuo"}]}
+
+Regras:
+- inclua apenas pessoas com alguma relevancia juridica no caso;
+- roleType deve ser definido pelo contexto;
+- se nao houver idade, omita age;
+- use personalInfo curto e objetivo.
+
+Contexto do caso:
+${caseContextText}
+
+Cards atuais de individuos:
+${JSON.stringify(currentIndividuals)}`;
+
+  const raw = await callAiProvider(prompt, true);
+  const parsed = parseJsonObjectFromModelText(raw);
+  const extracted = Array.isArray(parsed?.individuals)
+    ? normalizeIndividuals(parsed.individuals)
+    : [];
+
+  return mergeIndividuals(currentIndividuals, extracted);
+}
+
 async function buildAnalystPlan(message: string, history: AnalystChatMessage[]) {
   const historyText = history
     .slice(-8)
@@ -748,7 +881,7 @@ ${LEGAL_DOCUMENT_STYLE}
 Retorne JSON com os campos:
 - thinkingSummary (resumo curto e objetivo da linha de raciocinio, sem cadeia interna completa)
 - reply (resposta principal em markdown seguindo o formato juridico acima)
-- requestedTools (array com zero ou mais valores entre: create_complete_document, find_precedents, build_search_string, precedents_web_card, nullities_card, trend_analysis_card)
+- requestedTools (array com zero ou mais valores entre: create_complete_document, find_precedents, build_search_string, precedents_web_card, nullities_card, trend_analysis_card, individuals_cards)
 
 Regras para requestedTools:
 - use create_complete_document quando o usuario pedir peticao, minuta, parecer ou documento completo;
@@ -757,6 +890,7 @@ Regras para requestedTools:
 - use precedents_web_card quando for util buscar fontes publicas na web sobre precedentes.
 - use nullities_card quando houver risco de nulidade processual/material.
 - use trend_analysis_card quando o usuario pedir visao de tendencia jurisprudencial.
+- use individuals_cards quando houver pessoas envolvidas no caso para montar/atualizar cards de individuos.
 
 Historico:
 ${historyText || "(sem historico)"}
@@ -784,7 +918,8 @@ ${message}`;
           value === "build_search_string" ||
           value === "precedents_web_card" ||
           value === "nullities_card" ||
-          value === "trend_analysis_card"
+          value === "trend_analysis_card" ||
+          value === "individuals_cards"
         )
     : [];
 
@@ -804,14 +939,20 @@ ${message}`;
 async function executeAnalystTools(
   tools: string[],
   userMessage: string,
-  history: AnalystChatMessage[]
-) {
+  history: AnalystChatMessage[],
+  currentIndividuals: AnalystIndividual[]
+): Promise<AnalystToolExecutionResult> {
   const outputs: AnalystToolOutput[] = [];
+  let updatedIndividuals = [...currentIndividuals];
   const limitedTools = tools.slice(0, 3);
   const context = history
     .slice(-6)
     .map((entry) => `${entry.role}: ${entry.content}`)
     .join("\n");
+  const caseContextText = `${context}\nMensagem atual: ${userMessage}`
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1200);
 
   for (const tool of limitedTools) {
     if (tool === "create_complete_document") {
@@ -835,11 +976,12 @@ ${userMessage}`
     if (tool === "find_precedents") {
       const result = await callAiProvider(
         `Voce esta executando a tool find_precedents.
-Liste 3 precedentes possiveis (STJ/STF) com formato juridico organizado em markdown.
+Liste 3 precedentes possiveis (STJ/STF) com formato juridico organizado em markdown, sempre relacionados ao caso concreto abaixo.
 Para cada precedente inclua: numero/processo, tribunal, orgao julgador (se possivel), relator (se possivel), tese e aplicabilidade ao caso.
+Se um precedente nao tiver aderencia fatico-juridica com o caso, nao inclua.
 
-Mensagem base:
-${userMessage}`
+Caso concreto (contexto consolidado):
+${caseContextText}`
       );
       outputs.push({ tool, content: result || "Sem precedentes retornados." });
       continue;
@@ -864,7 +1006,7 @@ ${userMessage}`
       let webItems: WebSearchItem[] = [];
       try {
         webItems = await webSearchDuckDuckGo(
-          `${userMessage} jurisprudencia precedente STF STJ site:jusbrasil.com OR site:stf.jus.br OR site:stj.jus.br`,
+          `${caseContextText} jurisprudencia precedente relacionado ao caso STF STJ site:jusbrasil.com OR site:stf.jus.br OR site:stj.jus.br`,
           5
         );
       } catch {
@@ -874,6 +1016,7 @@ ${userMessage}`
       const synthesis = await callAiProvider(
         `Com base nas fontes web e no contexto, monte um card em markdown chamado "Precedentes pesquisados na internet".
 Inclua: resumo, pontos de uso pratico e cautelas de confiabilidade das fontes.
+So inclua precedentes que tenham aderencia ao caso concreto. Explique por que cada precedente e pertinente ao caso.
 
 Contexto:
 ${context}
@@ -962,23 +1105,55 @@ ${webItemsToMarkdown(webItems)}`
         content:
           `${synthesis || "Sem analise de tendencia retornada."}\n\n### Fontes web\n${webItemsToMarkdown(webItems)}`,
       });
+      continue;
+    }
+
+    if (tool === "individuals_cards") {
+      updatedIndividuals = await extractIndividualsFromCaseContext(
+        caseContextText,
+        updatedIndividuals
+      );
+
+      const content =
+        updatedIndividuals.length > 0
+          ? updatedIndividuals
+              .map(
+                (person, index) =>
+                  `${index + 1}. **${person.name}** (${person.roleType})${
+                    typeof person.age === "number" ? `, ${person.age} anos` : ""
+                  }\n   - ${person.personalInfo || "Sem informacoes adicionais."}`
+              )
+              .join("\n")
+          : "Nenhum individuo relevante identificado ate o momento.";
+
+      outputs.push({
+        tool,
+        content: `Cards de individuos atualizados pela IA:\n\n${content}`,
+      });
     }
   }
 
-  return outputs;
+  return { outputs, updatedIndividuals };
 }
 
 async function buildAnalystAssistantMessage(
   userMessage: string,
-  history: AnalystChatMessage[]
+  history: AnalystChatMessage[],
+  currentIndividuals: AnalystIndividual[]
 ) {
   const plan = await buildAnalystPlan(userMessage, history);
-  const toolOutputs = await executeAnalystTools(plan.requestedTools, userMessage, history);
+  const execution = await executeAnalystTools(
+    plan.requestedTools,
+    userMessage,
+    history,
+    currentIndividuals
+  );
 
   return {
     content: plan.reply,
     thinking: plan.thinkingSummary,
-    toolOutputs,
+    toolOutputs: execution.outputs,
+    individuals: execution.updatedIndividuals,
   };
 }
 
@@ -1786,6 +1961,7 @@ async function startServer() {
       title: fallbackChatTitleFromText(userMessageText),
       createdAt: timestamp,
       updatedAt: timestamp,
+      individuals: [],
       messages: [
         {
           id: db.counters.chatMessageId++,
@@ -1802,7 +1978,11 @@ async function startServer() {
       const generatedTitle = await maybeGenerateChatTitle(userMessageText);
       chat.title = generatedTitle || chat.title;
 
-      const assistant = await buildAnalystAssistantMessage(userMessageText, chat.messages);
+      const assistant = await buildAnalystAssistantMessage(
+        userMessageText,
+        chat.messages,
+        chat.individuals
+      );
       chat.messages.push({
         id: db.counters.chatMessageId++,
         role: "assistant",
@@ -1811,6 +1991,7 @@ async function startServer() {
         toolOutputs: assistant.toolOutputs,
         createdAt: nowIso(),
       });
+      chat.individuals = assistant.individuals;
       chat.updatedAt = nowIso();
 
       pushBackendLog("info", "ai", "Chat de analista criado com resposta da IA", {
@@ -1877,7 +2058,11 @@ async function startServer() {
     });
 
     try {
-      const assistant = await buildAnalystAssistantMessage(userMessageText, chat.messages);
+      const assistant = await buildAnalystAssistantMessage(
+        userMessageText,
+        chat.messages,
+        chat.individuals
+      );
       chat.messages.push({
         id: db.counters.chatMessageId++,
         role: "assistant",
@@ -1886,6 +2071,7 @@ async function startServer() {
         toolOutputs: assistant.toolOutputs,
         createdAt: nowIso(),
       });
+      chat.individuals = assistant.individuals;
 
       pushBackendLog("info", "ai", "Mensagem adicional processada no chat de analista", {
         route: "/api/analyst-chats/:id/messages",
@@ -1916,6 +2102,33 @@ async function startServer() {
       });
     }
 
+    chat.updatedAt = nowIso();
+    await persistDb();
+    return res.json(chat);
+  });
+
+  app.patch("/api/analyst-chats/:id/individuals", async (req, res) => {
+    const actor = requireActiveUser(req, res);
+    if (!actor) {
+      return;
+    }
+
+    const id = parseNumericId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid chat id" });
+    }
+
+    const chat = db.analystChats.find((entry) => entry.id === id && entry.userId === actor.id);
+    if (!chat) {
+      return res.status(404).json({ error: "Chat nao encontrado" });
+    }
+
+    const { individuals } = req.body as { individuals?: unknown[] };
+    if (!Array.isArray(individuals)) {
+      return res.status(400).json({ error: "individuals must be an array" });
+    }
+
+    chat.individuals = normalizeIndividuals(individuals);
     chat.updatedAt = nowIso();
     await persistDb();
     return res.json(chat);
