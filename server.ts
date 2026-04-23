@@ -881,10 +881,11 @@ ${LEGAL_DOCUMENT_STYLE}
 Retorne JSON com os campos:
 - thinkingSummary (resumo curto e objetivo da linha de raciocinio, sem cadeia interna completa)
 - reply (resposta principal em markdown seguindo o formato juridico acima)
-- requestedTools (array com zero ou mais valores entre: create_complete_document, find_precedents, build_search_string, precedents_web_card, nullities_card, trend_analysis_card, individuals_cards)
+- requestedTools (array com zero ou mais valores entre: case_summary, create_complete_document, find_precedents, build_search_string, precedents_web_card, nullities_card, trend_analysis_card, individuals_cards)
 
 Regras para requestedTools:
-- use create_complete_document quando o usuario pedir peticao, minuta, parecer ou documento completo;
+- use case_summary nos primeiros contatos ou quando o usuario descrever um novo caso, para sintetizar o contexto;
+- use create_complete_document APENAS quando o usuario pedir explicitamente peticao, minuta, parecer ou documento completo;
 - use find_precedents quando houver pedido de jurisprudencia, precedentes ou reforco argumentativo;
 - use build_search_string quando o usuario pedir estrategia de pesquisa em tribunais.
 - use precedents_web_card quando for util buscar fontes publicas na web sobre precedentes.
@@ -913,6 +914,7 @@ ${message}`;
     ? parsed.requestedTools
         .map((value) => String(value))
         .filter((value) =>
+          value === "case_summary" ||
           value === "create_complete_document" ||
           value === "find_precedents" ||
           value === "build_search_string" ||
@@ -955,6 +957,22 @@ async function executeAnalystTools(
     .slice(0, 1200);
 
   for (const tool of limitedTools) {
+    if (tool === "case_summary") {
+      const result = await callAiProvider(
+        `Voce esta executando a tool case_summary.
+Faca um resumo executivo sintetico do caso em markdown respondendo:
+1. O que se trata o caso? (2-3 linhas)
+2. Partes envolvidas (brevemente)
+3. Pontos juridicos principais (3-5 tópicos)
+4. Risco/oportunidade estratégica (1-2 linhas)
+
+Contexto:
+${caseContextText}`
+      );
+      outputs.push({ tool, content: result || "Resumo nao disponivel." });
+      continue;
+    }
+
     if (tool === "create_complete_document") {
       const result = await callAiProvider(
         `Voce esta executando a tool create_complete_document.
